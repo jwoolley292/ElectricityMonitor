@@ -8,32 +8,20 @@
 
 // GPIO
 struct device *gpio_dev;
+static struct gpio_callback gpio_trigger_cb;
 
-// GPIO for the buttons
-#define PIN_A SW0_GPIO_PIN
-#define PIN_B SW1_GPIO_PIN
+// GPIO for LDR
 #define PORT SW0_GPIO_CONTROLLER
-#define EDGE (GPIO_INT_EDGE | GPIO_INT_ACTIVE_LOW | GPIO_INT_DEBOUNCE)
+#define PIN_0 EXT_P0_GPIO_PIN
 
-static struct gpio_callback gpio_btnA_cb;
-static struct gpio_callback gpio_btnB_cb;
-
-#define BUTTON_DEBOUNCE_DELAY_MS 250
+#define DEBOUNCE_DELAY_MS 250
 #define ONE_WATT_HOUR 3600000
 static u32_t time, last_time, flash_time;
-
-// GPIO for the LED connected to pin 0 on the edge connector
-// See board.h in zephyr/boards/arm/bbc_microbit
-#define LED0 EXT_P0_GPIO_PIN
-
-// for use with k_work_submit which we use to handle button presses in a background thread to avoid holding onto an IRQ for too long
-static struct k_work buttonA_work;
-static struct k_work buttonB_work;
 
 bool debounce() {
 	bool result = false;
 	time = k_uptime_get_32();
-	if (time < last_time + BUTTON_DEBOUNCE_DELAY_MS) {
+	if (time < last_time + DEBOUNCE_DELAY_MS) {
 		result = true;
 	}
 	last_time = time;
@@ -42,81 +30,43 @@ bool debounce() {
 
 u32_t calculatePowerUsage() {
 	time = k_uptime_get_32();
-	printk("time = %d\n", time);
-	u32_t period = time - flash_time;
-	printk("period = %d\n", period);
-	u32_t power = ONE_WATT_HOUR / period;
+	u32_t power = ONE_WATT_HOUR / (time - flash_time);
 	printk("Current power: %dW\n", power);
+	flash_time = time;
 	return power;
 }
 
-void buttonA_work_handler(struct k_work *work)
+void triggered(struct device *gpiob, struct gpio_callback *cb, u32_t pins)
 {
-	flash_time = k_uptime_get_32();
-	printk("flash_time = %d\n", flash_time);
-}
-
-void buttonB_work_handler(struct k_work *work)
-{
-	calculatePowerUsage();
-}
-
-void button_A_pressed(struct device *gpiob, struct gpio_callback *cb,
-											u32_t pins)
-{
-	if (debounce()) {
-		return;
+	u32_t val = 0;
+	gpio_pin_read(gpio_dev, PIN_0, &val);
+	if (val == 0) {
+	    calculatePowerUsage();
 	}
-	k_work_submit(&buttonA_work);
 }
 
-void button_B_pressed(struct device *gpiob, struct gpio_callback *cb,
-											u32_t pins)
+void configureGpio(void)
 {
-	if (debounce()) {
-		return;
-	}
-	k_work_submit(&buttonB_work);
-}
-
-// Connected LDR
-// void ldr_init() {
-// 	gpio_pin_configure(gpio_dev, LDR0, GPIO_DIR_IN);
-// }
-
-// -------------------------------------------------------------------------------------------------------
-// Buttons
-// -------
-
-void configureButtons(void)
-{
-	printk("Press button A or button B\n");
+	gpio_dev = device_get_binding(PORT);
 	if (!gpio_dev)
 	{
 		printk("error - no GPIO device\n");
 		return;
 	}
+	printk("pin P0 triggering when low (bright)\n");
+	
+    gpio_pin_configure(gpio_dev, PIN_0, GPIO_DIR_IN | GPIO_INT | GPIO_INT_EDGE | GPIO_INT_ACTIVE_LOW  );
 
-	// Button A
-	k_work_init(&buttonA_work, buttonA_work_handler);
-	gpio_pin_configure(gpio_dev, PIN_A, GPIO_DIR_IN | GPIO_INT | EDGE);
-	gpio_init_callback(&gpio_btnA_cb, button_A_pressed, BIT(PIN_A));
-	gpio_add_callback(gpio_dev, &gpio_btnA_cb);
-	gpio_pin_enable_callback(gpio_dev, PIN_A);
-
-	// Button B
-	k_work_init(&buttonB_work, buttonB_work_handler);
-	gpio_pin_configure(gpio_dev, PIN_B, GPIO_DIR_IN | GPIO_INT | EDGE);
-	gpio_init_callback(&gpio_btnB_cb, button_B_pressed, BIT(PIN_B));
-	gpio_add_callback(gpio_dev, &gpio_btnB_cb);
-	gpio_pin_enable_callback(gpio_dev, PIN_B);
+	gpio_init_callback(&gpio_trigger_cb, triggered, BIT(PIN_0));
+	gpio_add_callback(gpio_dev, &gpio_trigger_cb);
+	gpio_pin_enable_callback(gpio_dev, PIN_0);
 }
 
 void main(void)
 {
-	printk("Electricity Monitor V1.1\n");
+	printk("Electricity Monitor V1.2\n");
 
 	gpio_dev = device_get_binding(PORT);
 
-	configureButtons();
+	configureGpio();
 }
